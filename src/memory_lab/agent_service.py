@@ -5,8 +5,6 @@ import math
 import os
 import re
 import sqlite3
-import urllib.error
-import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any
@@ -14,42 +12,15 @@ from urllib.parse import parse_qs, urlparse
 
 from .common import content_hash, ensure_under, env_url, http_json, json_text, utc_now
 from .http_service import serve
+from .model_clients import create_model_client
 
 
 MCP_URL = env_url("MCP_URL", "http://mcp:8082/mcp")
-OLLAMA_URL = env_url("OLLAMA_BASE_URL", "http://host.docker.internal:11434")
-MODEL = os.getenv("AGENT_MODEL", "qwen3.5:9b")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "qwen3-embedding:0.6b")
 DATA_ROOT = Path(os.getenv("AGENT_DATA", "/data/runs"))
 MAX_STEPS = 2
 
 ACTION_SCHEMA = {"type": "object", "properties": {"final": {"type": "string"}, "actions": {"type": "array", "items": {"type": "object", "properties": {"tool": {"type": "string"}, "arguments": {"type": "object"}}, "required": ["tool", "arguments"]}}}, "required": ["final", "actions"]}
 MEMORY_SCHEMA = {"type": "object", "properties": {"memories": {"type": "array", "items": {"type": "object", "properties": {"kind": {"type": "string"}, "content": {"type": "string"}}, "required": ["kind", "content"]}}}, "required": ["memories"]}
-
-
-class OllamaClient:
-    def _post(self, route: str, payload: dict[str, Any]) -> dict[str, Any]:
-        request = urllib.request.Request(f"{OLLAMA_URL}{route}", data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
-        try:
-            with urllib.request.urlopen(request, timeout=180) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"Cannot reach Ollama at {OLLAMA_URL}: {exc}") from exc
-
-    def chat(self, messages: list[dict[str, str]], schema: dict[str, Any]) -> dict[str, Any]:
-        result = self._post("/api/chat", {"model": MODEL, "messages": messages, "stream": False, "format": schema, "think": False, "options": {"temperature": 0.1}})
-        content = result.get("message", {}).get("content", "")
-        try:
-            return json.loads(content)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"Model returned invalid JSON: {content[:500]}") from exc
-
-    def embed(self, text: str) -> list[float] | None:
-        try:
-            result = self._post("/api/embed", {"model": EMBEDDING_MODEL, "input": text})
-            return result.get("embeddings", [None])[0]
-        except RuntimeError:
-            return None
 
 
 class MemoryStore:
@@ -137,13 +108,13 @@ class TicketAgent:
             raise ValueError("mode must be explicit or implicit")
         self.run_id, self.mode = run_id, mode
         self.memory = MemoryStore(ensure_under(DATA_ROOT, run_id) / "memory.sqlite")
-        self.ollama, self.mcp = OllamaClient(), McpClient()
+        self.model, self.mcp = create_model_client(), McpClient()
 
     def execute(self, task: str, phase: str) -> dict[str, Any]:
         if phase not in {"policy_sync", "maintenance"}:
             raise ValueError("phase must be policy_sync or maintenance")
         run_event_id = str(uuid.uuid4())
-        retrieved = self.memory.search(task, self.ollama.embed(task))
+        retrieved = self.memory.search(task, self.model.embed(task))
         policy = None
         policy_event_id = None
         if phase == "policy_sync":
@@ -158,7 +129,7 @@ class TicketAgent:
         trace: list[dict[str, Any]] = []
         response: dict[str, Any] = {"final": "", "actions": []}
         for _ in range(MAX_STEPS):
-            response = self.ollama.chat(messages, ACTION_SCHEMA)
+            response = self.model.chat(messages, ACTION_SCHEMA)
             actions = response.get("actions", [])[:1]
             if not actions:
                 break
@@ -194,20 +165,20 @@ Return JSON only. Call at most one tool per response."""
             instruction = "The scheduled policy is authoritative. You MUST return exactly one concise procedure memory faithfully summarizing its applicable ticket-maintenance rule. Do not invent facts."
         else:
             instruction = "Extract at most two concise durable memories that could help with future ticket work. Do not invent facts. Use kinds: fact, observation, procedure."
-        record = self.ollama.chat([{"role": "system", "content": instruction}, {"role": "user", "content": json_text({"task": task, "scheduled_policy": policy})}], MEMORY_SCHEMA)
+        record = self.model.chat([{"role": "system", "content": instruction}, {"role": "user", "content": json_text({"task": task, "scheduled_policy": policy})}], MEMORY_SCHEMA)
         writes = []
         for item in record.get("memories", [])[:2]:
             content, kind = str(item.get("content", "")).strip(), str(item.get("kind", "observation"))
             if content and kind in {"fact", "observation", "procedure"}:
                 source_ref = str(policy.get("content_hash")) if policy else "agent-outcome"
-                write = self.memory.add(content=content, kind=kind, source_type="mcp_policy_consolidation" if policy else "llm_consolidation", source_ref=source_ref, parent_ids=[policy_event_id] if policy_event_id else [], embedding=self.ollama.embed(content))
+                write = self.memory.add(content=content, kind=kind, source_type="mcp_policy_consolidation" if policy else "llm_consolidation", source_ref=source_ref, parent_ids=[policy_event_id] if policy_event_id else [], embedding=self.model.embed(content))
                 writes.append(write)
         return writes
 
 
 def route(method: str, path: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]]:
     if method == "GET" and path == "/health":
-        return 200, {"ok": True, "service": "agent", "model": MODEL, "embedding_model": EMBEDDING_MODEL}
+        return 200, {"ok": True, "service": "agent", **create_model_client().metadata()}
     parsed = urlparse(path)
     segments = [part for part in parsed.path.split("/") if part]
     if len(segments) != 3 or segments[0] != "runs":

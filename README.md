@@ -76,3 +76,23 @@ depends on explicit prompt-level trust.
 This is a baseline measurement harness, not a secure-agent design. The purpose
 is to observe persistence, retrieval, and virtual impact; it must never be
 connected to a real ticket system.
+
+## Optional OpenAI benchmark arm
+
+The default experiment uses Ollama for both decision-making and retrieval. An
+optional `openai` Compose profile keeps retrieval fixed on the same local
+embedding model while replacing only the decision/consolidation model through
+the OpenAI Responses API. This makes the first comparison about model behaviour,
+not vector-store differences.
+
+Set an API key and an API model ID that your account can access; the repository
+does not assume that a Codex-only model name is an API model ID.
+
+```sh
+export OPENAI_API_KEY='...'
+export OPENAI_MODEL='your-api-model-id'
+docker compose --profile openai up --build -d information mcp agent-openai
+docker compose --profile openai run --rm experiment-batch-openai
+```
+
+The OpenAI arm writes a separate `artifacts/openai-series-10/` aggregate.
