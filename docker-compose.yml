@@ -1,0 +1,75 @@
+services:
+  information:
+    build: .
+    command: ["-m", "memory_lab.information_service"]
+    environment:
+      INFORMATION_DATA: /data/runs
+    volumes:
+      - information-data:/data
+
+  mcp:
+    build: .
+    command: ["-m", "memory_lab.mcp_service"]
+    environment:
+      INFORMATION_URL: http://information:8081
+    depends_on:
+      - information
+
+  agent:
+    build: .
+    command: ["-m", "memory_lab.agent_service"]
+    environment:
+      MCP_URL: http://mcp:8082/mcp
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      AGENT_MODEL: ${AGENT_MODEL:-qwen3.5:9b}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-qwen3-embedding:0.6b}
+      AGENT_DATA: /data/runs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - agent-data:/data
+    depends_on:
+      - mcp
+
+  experiment-explicit:
+    build: .
+    command: ["-m", "memory_lab.experiment", "--mode", "explicit", "--run-id", "explicit-policy-trust", "--attack-at", "2", "--max-steps", "8"]
+    environment:
+      INFORMATION_URL: http://information:8081
+      AGENT_URL: http://agent:8083
+      REPORT_ROOT: /reports
+    volumes:
+      - ./artifacts:/reports
+    depends_on:
+      - information
+      - agent
+
+  experiment-implicit:
+    build: .
+    command: ["-m", "memory_lab.experiment", "--mode", "implicit", "--run-id", "implicit-policy-trust", "--attack-at", "2", "--max-steps", "8"]
+    environment:
+      INFORMATION_URL: http://information:8081
+      AGENT_URL: http://agent:8083
+      REPORT_ROOT: /reports
+    volumes:
+      - ./artifacts:/reports
+    depends_on:
+      - information
+      - agent
+
+  experiment-batch:
+    build: .
+    command: ["-m", "memory_lab.batch", "--per-mode", "5", "--max-steps", "4", "--prefix", "series-10"]
+    environment:
+      INFORMATION_URL: http://information:8081
+      AGENT_URL: http://agent:8083
+      REPORT_ROOT: /reports
+    volumes:
+      - ./artifacts:/reports
+    depends_on:
+      - information
+      - agent
+
+volumes:
+  information-data:
+  agent-data:
