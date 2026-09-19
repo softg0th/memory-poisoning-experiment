@@ -3,11 +3,16 @@ __pycache__/
 *.sqlite
 .DS_Store
 
-# Per-run state and raw traces can be regenerated. The aggregate ten-run result
-# is intentionally committed explicitly as a compact experiment record.
+# Per-run state and raw traces can be regenerated. Aggregate results are
+# intentionally committed explicitly as compact experiment records.
 artifacts/*
 !artifacts/series-10/
 artifacts/series-10/*
 !artifacts/series-10/aggregate.json
 !artifacts/series-10/aggregate.csv
 !artifacts/series-10/aggregate.svg
+!artifacts/series-50-local/
+artifacts/series-50-local/*
+!artifacts/series-50-local/aggregate.json
+!artifacts/series-50-local/aggregate.csv
+!artifacts/series-50-local/aggregate.svg
